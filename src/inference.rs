@@ -14,7 +14,7 @@ use crate::tokenizer::{BpeTokenizer, Tokenizer};
 
 pub fn infer<B: AutodiffBackend>(tokenizer: impl Tokenizer, device: B::Device) {
     // Include the model file as a reference to a byte array
-    static MODEL_BYTES: &[u8] = include_bytes!("./../artifacts/model.bin");
+    static MODEL_BYTES: &[u8] = include_bytes!("../artifacts/model.bin");
 
     // Load model binary record in full precision
     let record = BinBytesRecorder::<FullPrecisionSettings>::default()
@@ -28,8 +28,10 @@ pub fn infer<B: AutodiffBackend>(tokenizer: impl Tokenizer, device: B::Device) {
     let model: TextGenerationModel<B> =
         model_config.init_model_from_dir(model_dir.join("exploded_model"), &device);
 
-    let prompt = "Elementray";
-    let num_tokens = 20;
+    // let prompt = "Elementray";
+    // let num_tokens = 20;
+    let prompt = "Alan Turing theorized that computers would one day become";
+    let num_tokens = 8;
 
     let token_ids = tokenizer.encode(&prompt).unwrap();
 

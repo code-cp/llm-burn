@@ -81,13 +81,13 @@ pub fn train<B: AutodiffBackend, D: Dataset<TextGenerationItem> + 'static>(
         .num_epochs(config.max_iters)
         .build(model, optim, lr_scheduler);
 
-    let model_trained = learner.fit(dataloader_train, dataloader_test);
+    let model = learner.fit(dataloader_train, dataloader_test);
 
     config.save(format!("{artifact_dir}/config.json")).unwrap();
 
     // Save model in binary format with full precision
     let recorder = BinFileRecorder::<FullPrecisionSettings>::new();
-    model_trained
+    model
         .save_file(format!("{artifact_dir}/model.bin"), &recorder)
         .expect("Should be able to save the model");
 }

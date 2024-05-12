@@ -22,26 +22,35 @@ struct TrainConfig {
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    if args.len() < 2 {
-        panic!("Usage: [mode]", &args[0]);
-    }
-    let mode: String = String::from(&args[1]);
+    let mode = if args.len() < 2 {
+        "train_small".to_string()
+    } else {
+        String::from(&args[1])
+    };
+
+    let current_dir = env::current_dir().expect("Failed to get current directory");
+    let dataset_dir = current_dir.join("data/124M");
 
     let tokenizer = BpeTokenizer::from_dir(dataset_dir.clone()).unwrap();
     let device = WgpuDevice::default();
 
     if mode == "infer" {
-        infer(tokenizer, device);
+        infer::<Backend>(tokenizer, device);
         return;
     };
 
     let train_config = match mode.as_str() {
         "train_small" => TrainConfig {
-            batch_size: 1,
-            block_size: 2,
-            max_iters: 1,
+            batch_size: 2,
+            block_size: 5,
+            max_iters: 10,
         },
         "train_full" => TrainConfig {
+            batch_size: 64,
+            block_size: 100,
+            max_iters: 50,
+        },
+        _ => TrainConfig {
             batch_size: 64,
             block_size: 100,
             max_iters: 50,
@@ -56,11 +65,9 @@ fn main() {
         train_config.max_iters,
     );
 
-    let current_dir = env::current_dir().expect("Failed to get current directory");
     let dataset_dir = current_dir.join("data/dataset.txt");
-    let artifact_dir = "./artifacts";
-
     let data_dir = dataset_dir.to_str().unwrap();
+    let artifact_dir = "./artifacts";
 
     train::<Backend, CustomDataset>(
         device,
