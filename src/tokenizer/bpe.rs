@@ -20,7 +20,6 @@ pub struct BpeTokenizer {
     id_to_token: HashMap<TokenId, Token>,
     /// priority of BPE merges
     bpe_ranks: HashMap<StringPair, usize>,
-    tokenize_cache: HashMap<String, Vec<TokenId>>,
 }
 
 impl BpeTokenizer {
@@ -43,7 +42,6 @@ impl BpeTokenizer {
             id_to_token: token_to_id.invert(),
             token_to_id,
             bpe_ranks: bpe_ranks_from_path(model_dir.join("vocab.bpe"))?,
-            tokenize_cache: HashMap::new(),
         })
     }
 
@@ -133,7 +131,7 @@ impl BpeTokenizer {
 }
 
 impl Tokenizer for BpeTokenizer {
-    fn encode(&mut self, text: &str) -> Result<Vec<TokenId>> {
+    fn encode(&self, text: &str) -> Result<Vec<TokenId>> {
         let mut token_ids = Vec::new();
 
         for word in self.word_re.find_iter(text) {
@@ -145,27 +143,20 @@ impl Tokenizer for BpeTokenizer {
                 .map(|b| self.byte_to_char.get(b).unwrap())
                 .collect();
 
-            if let Some(cached_token_ids) = self.tokenize_cache.get(&word) {
-                // if this word is already tokenized, just look up the token
-                token_ids.extend(cached_token_ids.iter());
-            } else {
-                // if this is an unseen word, then tokenize it
-                let tokens = self.tokenize(word.clone());
-                let new_token_ids: Vec<TokenId> = tokens
-                    .into_iter()
-                    .map(|token| {
-                        *self
-                            .token_to_id
-                            .get(&token)
-                            .with_context(|| format!("unexpected token {token}"))
-                            .unwrap()
-                    })
-                    .collect();
+            // if this is an unseen word, then tokenize it
+            let tokens = self.tokenize(word.clone());
+            let new_token_ids: Vec<TokenId> = tokens
+                .into_iter()
+                .map(|token| {
+                    *self
+                        .token_to_id
+                        .get(&token)
+                        .with_context(|| format!("unexpected token {token}"))
+                        .unwrap()
+                })
+                .collect();
 
-                token_ids.extend(new_token_ids.iter());
-
-                self.tokenize_cache.insert(word, new_token_ids);
-            }
+            token_ids.extend(new_token_ids.iter());
         }
 
         Ok(token_ids)
@@ -203,7 +194,7 @@ mod tests {
         let current_dir = env::current_dir().expect("Failed to get current directory");
         let model_dir = current_dir.join("data/124M");
 
-        let mut tokenizer = BpeTokenizer::from_dir(model_dir).unwrap();
+        let tokenizer = BpeTokenizer::from_dir(model_dir).unwrap();
         let text = "hello world";
         let tokens = tokenizer.encode(text).unwrap();
         let decoded = tokenizer.decode(&tokens);

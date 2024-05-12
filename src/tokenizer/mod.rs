@@ -13,6 +13,6 @@ pub type StringPair = (String, String);
 use anyhow::Result;
 
 pub trait Tokenizer: Send + Sync {
-    fn encode(&mut self, string: &str) -> Result<Vec<TokenId>>;
+    fn encode(&self, string: &str) -> Result<Vec<TokenId>>;
     fn decode(&self, tokens: &[TokenId]) -> String;
 }
