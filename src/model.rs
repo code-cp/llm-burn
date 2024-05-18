@@ -214,7 +214,7 @@ impl<B: Backend> TextGenerationModel<B> {
         let x = self.layer_norm.forward(x);
 
         // reuse the embedding matrix wte for the projection
-        let output_to_logits = self.token_embedding.weight.val().transpose();
+        let output_to_logits = self.token_embedding.weight.val().clone().transpose();
         let x = x.matmul(output_to_logits);
 
         x
@@ -236,15 +236,15 @@ impl<B: Backend> TextGenerationModel<B> {
 
         for batch_idx in 0..batch_size {
             for position_idx in 0..block_size {
-                let logits = self
-                    .forward(
-                        inputs
-                            .clone()
-                            .slice([batch_idx..batch_idx + 1, 0..position_idx + 1]),
-                    )
-                    .squeeze(1);
+                let logits = self.forward(
+                    inputs
+                        .clone()
+                        .slice([batch_idx..batch_idx + 1, 0..position_idx + 1]),
+                );
+
                 let output_index =
                     Tensor::from_ints([(batch_idx * block_size + position_idx) as i32], &device);
+
                 output_flatten = output_flatten.select_assign(0, output_index, logits);
             }
         }
