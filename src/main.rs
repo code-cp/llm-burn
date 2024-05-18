@@ -23,7 +23,7 @@ struct TrainConfig {
 fn main() {
     let args: Vec<String> = env::args().collect();
     let mode = if args.len() < 2 {
-        "infer_from_pretrained_weights".to_string()
+        "train_small".to_string()
     } else {
         String::from(&args[1])
     };
@@ -51,9 +51,9 @@ fn main() {
 
     let train_config = match mode.as_str() {
         "train_small" => TrainConfig {
-            batch_size: 2,
-            block_size: 5,
-            max_iters: 10,
+            batch_size: 1,
+            block_size: 1,
+            max_iters: 1,
         },
         "train_full" => TrainConfig {
             batch_size: 64,
