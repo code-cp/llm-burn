@@ -469,7 +469,7 @@ impl AttentionConfig {
             n_embed: self.n_embd,
         };
         let layer_norm =
-            layer_norm_config.init_from_pretrained_weights(block_dir.join("ln_2"), device);
+            layer_norm_config.init_from_pretrained_weights(block_dir.join("ln_1"), device);
 
         Attention {
             layer_norm,
