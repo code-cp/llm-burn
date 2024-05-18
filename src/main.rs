@@ -37,7 +37,7 @@ fn main() {
     // let prompt = "Elementray";
     // let num_tokens = 20;
     let prompt = "Alan Turing theorized that computers would one day become";
-    let num_tokens = 8;
+    let num_tokens = 10;
 
     if mode == "infer_from_finetuned_weights" {
         let model = load_finetuned_model(&device);
