@@ -21,6 +21,8 @@ struct TrainConfig {
 }
 
 fn main() {
+    env::set_var("RUST_BACKTRACE", "full");
+
     let args: Vec<String> = env::args().collect();
     let mode = if args.len() < 2 {
         "train_small".to_string()
