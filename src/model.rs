@@ -104,7 +104,8 @@ impl TextGenerationModelConfig {
         let block_config = BlockConfig {
             num_heads: self.n_head,
             n_embed: self.n_embd,
-            expand_dim: self.n_embd * 4,
+            attn_expand_dim: self.n_embd * 3,
+            ffn_expand_dim: self.n_embd * 4,
             depth: self.n_layer,
         };
 
@@ -131,7 +132,8 @@ impl TextGenerationModelConfig {
         let block_config = BlockConfig {
             num_heads: self.n_head,
             n_embed: self.n_embd,
-            expand_dim: self.n_embd * 4,
+            attn_expand_dim: 2304,
+            ffn_expand_dim: 3072,
             depth: self.n_layer,
         };
 
@@ -162,20 +164,16 @@ impl<B: Backend> TextGenerationModel<B> {
     pub fn infer(&self, mut inputs: Vec<TokenId>, num_tokens: usize) -> Vec<TokenId> {
         let device = B::Device::default();
 
-        #[allow(clippy::cast_possible_truncation)]
-        let indices: Vec<i32> = inputs.iter().map(|token_id| *token_id as i32).collect();
-
-        println!("indices {indices:?}");
-
-        let indices = Tensor::<B, 1, Int>::from_data(
-            Data::new(indices.clone(), Shape::new([indices.len()])).convert(),
-            &device,
-        )
-        .unsqueeze_dim(0);
-
-        println!("indices tensor {:?}", indices.clone().into_data());
-
         for _ in 0..num_tokens {
+            #[allow(clippy::cast_possible_truncation)]
+            let indices: Vec<i32> = inputs.iter().map(|token_id| *token_id as i32).collect();
+
+            let indices = Tensor::<B, 1, Int>::from_data(
+                Data::new(indices.clone(), Shape::new([indices.len()])).convert(),
+                &device,
+            )
+            .unsqueeze_dim(0);
+
             let logits = self.forward(indices.clone());
 
             // select the last row from logits
@@ -203,25 +201,49 @@ impl<B: Backend> TextGenerationModel<B> {
 
         let token_embeddings = self.token_embedding.forward(inputs.clone());
 
+        println!("indices {:?}", inputs.clone().to_data());
+
         let block_size = inputs.dims()[0];
         let indices = Tensor::arange(0..block_size as i64, &device).reshape([1, block_size]);
-        let position_embeddings = self.position_embedding.forward(indices);
+        let position_embeddings = self.position_embedding.forward(indices.clone());
 
         // x size (10x768)
         // remove the batch dimension, since input only contains one batch
         let mut x = (token_embeddings + position_embeddings).squeeze(0);
 
-        println!("x {:?}", x.clone().max().into_scalar().elem::<f32>());
+        println!(
+            "x max {:?} x min {:?}",
+            x.clone().max().into_scalar().elem::<f32>(),
+            x.clone().min().into_scalar().elem::<f32>()
+        );
 
         for block in &self.blocks {
             x = block.forward(x);
         }
 
+        println!(
+            "x max {:?} x min {:?}",
+            x.clone().max().into_scalar().elem::<f32>(),
+            x.clone().min().into_scalar().elem::<f32>()
+        );
+
         let x = self.layer_norm.forward(x);
+
+        println!(
+            "x max {:?} x min {:?}",
+            x.clone().max().into_scalar().elem::<f32>(),
+            x.clone().min().into_scalar().elem::<f32>()
+        );
 
         // reuse the embedding matrix wte for the projection
         let output_to_logits = self.token_embedding.weight.val().transpose();
         let x = x.matmul(output_to_logits);
+
+        println!(
+            "x max {:?} x min {:?}",
+            x.clone().max().into_scalar().elem::<f32>(),
+            x.clone().min().into_scalar().elem::<f32>()
+        );
 
         x
     }
@@ -308,12 +330,12 @@ impl Gpt2LinearLayerConfig {
             device,
         );
         let bias: Tensor<B, 1> = Tensor::<B, 1>::from_data(
-            Data::new(weights_vec.clone(), Shape::new([bias_vec.len()])).convert(),
+            Data::new(bias_vec.clone(), Shape::new([bias_vec.len()])).convert(),
             device,
         );
 
         let weights = Param::from_tensor(weights);
-        let bias = Param::from_tensor(bias);
+        let bias: Param<Tensor<B, 1>> = Param::from_tensor(bias);
 
         let mut linear_layer = LinearConfig::new(self.input_dim, self.output_dim).init(device);
         linear_layer.weight = weights;
@@ -346,19 +368,19 @@ impl FeedForwardConfig {
         block_dir: &PathBuf,
         device: &B::Device,
     ) -> FeedForward<B> {
-        let contract_layer_config = Gpt2LinearLayerConfig {
+        let expand_layer_config = Gpt2LinearLayerConfig {
             input_dim: self.n_embd,
             output_dim: self.expand_dim,
         };
-        let contract = contract_layer_config
-            .init_from_pretrained_weights(block_dir.join("mlp/c_proj"), device);
+        let expand =
+            expand_layer_config.init_from_pretrained_weights(block_dir.join("mlp/c_fc"), device);
 
-        let expand_layer_config = Gpt2LinearLayerConfig {
+        let contract_layer_config = Gpt2LinearLayerConfig {
             input_dim: self.expand_dim,
             output_dim: self.n_embd,
         };
-        let expand =
-            expand_layer_config.init_from_pretrained_weights(block_dir.join("mlp/c_fc"), device);
+        let contract = contract_layer_config
+            .init_from_pretrained_weights(block_dir.join("mlp/c_proj"), device);
 
         let layer_norm_config = Gpt2LayerNormConfig {
             n_embed: self.n_embd,
@@ -375,17 +397,17 @@ impl FeedForwardConfig {
     }
 
     pub fn init<B: Backend>(&self, device: &B::Device) -> FeedForward<B> {
-        let contract_layer_config = Gpt2LinearLayerConfig {
-            input_dim: self.n_embd,
-            output_dim: self.expand_dim,
-        };
-        let contract = contract_layer_config.init(device);
-
         let expand_layer_config = Gpt2LinearLayerConfig {
             input_dim: self.expand_dim,
             output_dim: self.n_embd,
         };
         let expand = expand_layer_config.init(device);
+
+        let contract_layer_config = Gpt2LinearLayerConfig {
+            input_dim: self.n_embd,
+            output_dim: self.expand_dim,
+        };
+        let contract = contract_layer_config.init(device);
 
         let layer_norm_config = Gpt2LayerNormConfig {
             n_embed: self.n_embd,
@@ -430,17 +452,17 @@ pub struct AttentionConfig {
 
 impl AttentionConfig {
     pub fn init<B: Backend>(&self, device: &B::Device) -> Attention<B> {
-        let contract_layer_config = Gpt2LinearLayerConfig {
+        let expand_layer_config = Gpt2LinearLayerConfig {
             input_dim: self.n_embd,
             output_dim: self.expand_dim,
         };
-        let contract = contract_layer_config.init(device);
+        let expand = expand_layer_config.init(device);
 
-        let expand_layer_config = Gpt2LinearLayerConfig {
-            input_dim: self.expand_dim,
+        let contract_layer_config = Gpt2LinearLayerConfig {
+            input_dim: self.n_embd,
             output_dim: self.n_embd,
         };
-        let expand = expand_layer_config.init(device);
+        let contract = contract_layer_config.init(device);
 
         let layer_norm_config = Gpt2LayerNormConfig {
             n_embed: self.n_embd,
@@ -460,19 +482,21 @@ impl AttentionConfig {
         block_dir: &PathBuf,
         device: &B::Device,
     ) -> Attention<B> {
-        let contract_layer_config = Gpt2LinearLayerConfig {
+        let expand_layer_config = Gpt2LinearLayerConfig {
             input_dim: self.n_embd,
             output_dim: self.expand_dim,
         };
-        let contract = contract_layer_config
-            .init_from_pretrained_weights(block_dir.join("attn/c_proj"), device);
 
-        let expand_layer_config = Gpt2LinearLayerConfig {
-            input_dim: self.expand_dim,
-            output_dim: self.n_embd,
-        };
         let expand =
             expand_layer_config.init_from_pretrained_weights(block_dir.join("attn/c_attn"), device);
+
+        let contract_layer_config = Gpt2LinearLayerConfig {
+            input_dim: self.n_embd,
+            output_dim: self.n_embd,
+        };
+
+        let contract = contract_layer_config
+            .init_from_pretrained_weights(block_dir.join("attn/c_proj"), device);
 
         let layer_norm_config = Gpt2LayerNormConfig {
             n_embed: self.n_embd,
@@ -504,6 +528,12 @@ impl<B: Backend> Attention<B> {
         v: &Tensor<B, 2>,
         causal_mask: &Tensor<B, 2>,
     ) -> Tensor<B, 2> {
+        println!("q {:?}", q.clone().max().into_scalar().elem::<f32>());
+        println!("k {:?}", k.clone().max().into_scalar().elem::<f32>());
+        println!("v {:?}", v.clone().max().into_scalar().elem::<f32>());
+
+        println!("causal_mask {:?}", causal_mask.dims());
+
         let d = (k.dims()[1] as f32).sqrt();
         let kt = k.clone().transpose();
         let qk = q.clone().matmul(kt) / d + causal_mask.clone();
@@ -513,17 +543,37 @@ impl<B: Backend> Attention<B> {
     }
 
     pub fn forward(&self, x: Tensor<B, 2>) -> Tensor<B, 2> {
+        let device = B::Device::default();
+
+        println!(
+            "x max {:?} x min {:?}",
+            x.clone().max().into_scalar().elem::<f32>(),
+            x.clone().min().into_scalar().elem::<f32>()
+        );
+
         let x = self.layer_norm.forward(x);
+
+        println!(
+            "x max {:?} x min {:?}",
+            x.clone().max().into_scalar().elem::<f32>(),
+            x.clone().min().into_scalar().elem::<f32>()
+        );
 
         // x size (10x2034)
         let x = self.expand.forward(x.clone());
+        println!("x dim {:?}", x.clone().dims());
+        println!(
+            "x max {:?} x min {:?}",
+            x.clone().max().into_scalar().elem::<f32>(),
+            x.clone().min().into_scalar().elem::<f32>()
+        );
+
         let qkv = x.clone().chunk(3, 1);
         let qkv_heads = qkv
             .iter()
             .map(|v| v.clone().chunk(self.num_heads, 1))
             .collect::<Vec<_>>();
 
-        let device = B::Device::default();
         let head_shape = x.dims()[0];
         // mask size (10x10)
         let causal_mask = (Tensor::ones(Shape::new([head_shape, head_shape]), &device)
@@ -536,6 +586,12 @@ impl<B: Backend> Attention<B> {
         let out_heads_concat = Tensor::cat(out_heads, 1);
         let x = self.contract.forward(out_heads_concat);
 
+        println!(
+            "x max {:?} x min {:?}",
+            x.clone().max().into_scalar().elem::<f32>(),
+            x.clone().min().into_scalar().elem::<f32>()
+        );
+
         x
     }
 }
@@ -544,7 +600,8 @@ impl<B: Backend> Attention<B> {
 pub struct BlockConfig {
     pub num_heads: usize,
     pub n_embed: usize,
-    pub expand_dim: usize,
+    pub attn_expand_dim: usize,
+    pub ffn_expand_dim: usize,
     pub depth: usize,
 }
 
@@ -556,14 +613,14 @@ impl BlockConfig {
     ) -> Block<B> {
         let attention_config = AttentionConfig {
             n_embd: self.n_embed,
-            expand_dim: self.expand_dim,
+            expand_dim: self.attn_expand_dim,
             num_heads: self.num_heads,
         };
         let attention = attention_config.init_from_pretrained_weights(block_dir, device);
 
         let feedforward_config = FeedForwardConfig {
             n_embd: self.n_embed,
-            expand_dim: self.expand_dim,
+            expand_dim: self.ffn_expand_dim,
         };
         let feedforward = feedforward_config.init_from_pretrained_weights(block_dir, device);
 
@@ -591,14 +648,14 @@ impl BlockConfig {
     pub fn init_block<B: Backend>(&self, device: &B::Device) -> Block<B> {
         let attention_config = AttentionConfig {
             n_embd: self.n_embed,
-            expand_dim: self.expand_dim,
+            expand_dim: self.attn_expand_dim,
             num_heads: self.num_heads,
         };
         let attention = attention_config.init(device);
 
         let feedforward_config = FeedForwardConfig {
             n_embd: self.n_embed,
-            expand_dim: self.expand_dim,
+            expand_dim: self.ffn_expand_dim,
         };
         let feedforward = feedforward_config.init(device);
 
@@ -624,7 +681,18 @@ pub struct Block<B: Backend> {
 impl<B: Backend> Block<B> {
     pub fn forward(&self, x: Tensor<B, 2>) -> Tensor<B, 2> {
         let x = x.clone() + self.attention.forward(x);
+        println!(
+            "x max {:?} x min {:?}",
+            x.clone().max().into_scalar().elem::<f32>(),
+            x.clone().min().into_scalar().elem::<f32>()
+        );
         let x = x.clone() + self.feedforward.forward(x);
+        println!(
+            "x max {:?} x min {:?}",
+            x.clone().max().into_scalar().elem::<f32>(),
+            x.clone().min().into_scalar().elem::<f32>()
+        );
+
         x
     }
 }
@@ -685,9 +753,28 @@ impl<B: Backend> Gpt2LayerNorm<B> {
         let eps = 1e-5;
 
         let mean = x.clone().mean_dim(1);
+
+        println!(
+            "mean max {:?} mean min {:?}",
+            mean.clone().max().into_scalar().elem::<f32>(),
+            mean.clone().min().into_scalar().elem::<f32>()
+        );
+
         let var = x.clone().var(1);
 
+        println!(
+            "var max {:?} var min {:?}",
+            var.clone().max().into_scalar().elem::<f32>(),
+            var.clone().min().into_scalar().elem::<f32>()
+        );
+
         let x = (x - mean) / (var + eps).sqrt();
+
+        println!(
+            "x max {:?} x min {:?}",
+            x.clone().max().into_scalar().elem::<f32>(),
+            x.clone().min().into_scalar().elem::<f32>()
+        );
 
         let gamma = self.gamma.val().unsqueeze::<2>();
         let gamma: Tensor<B, 2> = gamma.repeat(0, x.dims()[0]);
