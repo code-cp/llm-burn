@@ -35,7 +35,7 @@ fn main() {
     let device = WgpuDevice::default();
 
     if mode == "infer" {
-        infer::<Backend>(tokenizer, device);
+        infer::<Backend>(tokenizer, &device);
         return;
     };
 
@@ -71,12 +71,6 @@ fn main() {
 
     train::<Backend, CustomDataset>(
         device,
-        // LibTorchDevice::Cuda(0),
-        // if cfg!(target_os = "macos") {
-        //     burn::tensor::Device::<Backend>::Mps
-        // } else {
-        //     burn::tensor::Device::<Backend>::Cuda(0)
-        // },
         CustomDataset::train(data_dir, config.batch_size),
         CustomDataset::test(data_dir, config.batch_size),
         config,

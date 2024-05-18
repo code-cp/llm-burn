@@ -8,7 +8,7 @@ use burn::{
     lr_scheduler::noam::NoamLrSchedulerConfig,
     module::Module,
     optim::{Adam, AdamConfig},
-    record::{BinFileRecorder, CompactRecorder, FullPrecisionSettings, Recorder},
+    record::{CompactRecorder, FullPrecisionSettings, NamedMpkFileRecorder, Recorder},
     tensor::backend::AutodiffBackend,
     train::{
         metric::{AccuracyMetric, CudaMetric, LearningRateMetric, LossMetric},
@@ -48,7 +48,7 @@ pub fn train<B: AutodiffBackend, D: Dataset<TextGenerationItem> + 'static>(
 
     let model_config = TextGenerationModelConfig::from_dir(model_dir.clone());
     let model: TextGenerationModel<B> =
-        model_config.init_model_from_dir(model_dir.join("exploded_model"), &device);
+        model_config.init_from_pretrained_weights(&model_dir.join("exploded_model"), &device);
 
     let dataloader_train = DataLoaderBuilder::new(batcher_train)
         .batch_size(config.batch_size)
@@ -86,7 +86,7 @@ pub fn train<B: AutodiffBackend, D: Dataset<TextGenerationItem> + 'static>(
     config.save(format!("{artifact_dir}/config.json")).unwrap();
 
     // Save model in binary format with full precision
-    let recorder = BinFileRecorder::<FullPrecisionSettings>::new();
+    let recorder = NamedMpkFileRecorder::<FullPrecisionSettings>::new();
     model
         .save_file(format!("{artifact_dir}/model.bin"), &recorder)
         .expect("Should be able to save the model");

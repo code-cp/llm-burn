@@ -1,7 +1,7 @@
 use anyhow::{bail, Context, Result};
 use burn::{
     config::Config,
-    module::Module,
+    module::{Module, Param},
     nn::{attention, Gelu, LayerNorm},
     tensor::{backend::Backend, ElementConversion, Tensor},
 };
@@ -47,20 +47,16 @@ impl TextGenerationModelConfig {
         config
     }
 
-    pub fn init_model_from_dir<B: Backend>(
+    pub fn init_from_pretrained_weights<B: Backend>(
         &self,
-        model_dir: PathBuf,
+        model_dir: &PathBuf,
         device: &B::Device,
     ) -> TextGenerationModel<B> {
         let token_embedding_arr: Array2<f32> =
             ndarray_npy::read_npy(model_dir.join("wte.npy")).expect("should load wte");
         let token_embedding_vec: Vec<f32> = token_embedding_arr.iter().copied().collect();
 
-        let position_embedding_arr: Array2<f32> =
-            ndarray_npy::read_npy(model_dir.join("wpe.npy")).expect("should load wpe");
-        let position_embedding_vec: Vec<f32> = position_embedding_arr.iter().copied().collect();
-
-        let token_embedding: Tensor<B, 2> = Tensor::<B, 2>::from_data(
+        let token_embedding_tensor: Tensor<B, 2> = Tensor::<B, 2>::from_data(
             Data::new(
                 token_embedding_vec.clone(),
                 Shape::new([
@@ -72,7 +68,15 @@ impl TextGenerationModelConfig {
             device,
         );
 
-        let position_embedding: Tensor<B, 2> = Tensor::<B, 2>::from_data(
+        let mut token_embedding: Embedding<B> =
+            EmbeddingConfig::new(self.n_vocab, self.n_embd).init(device);
+        token_embedding.weight = Param::from_tensor(token_embedding_tensor);
+
+        let position_embedding_arr: Array2<f32> =
+            ndarray_npy::read_npy(model_dir.join("wpe.npy")).expect("should load wpe");
+        let position_embedding_vec: Vec<f32> = position_embedding_arr.iter().copied().collect();
+
+        let position_embedding_tensor: Tensor<B, 2> = Tensor::<B, 2>::from_data(
             Data::new(
                 position_embedding_vec.clone(),
                 Shape::new([
@@ -84,30 +88,71 @@ impl TextGenerationModelConfig {
             device,
         );
 
+        let mut position_embedding: Embedding<B> =
+            EmbeddingConfig::new(self.n_vocab, self.n_embd).init(device);
+        position_embedding.weight = Param::from_tensor(position_embedding_tensor);
+
         let layer_norm_config = Gpt2LayerNormConfig {
-            layer_norm_dir: model_dir.join("ln_f"),
+            n_embed: self.n_embd,
         };
 
+        // freeze the layer norm params during training
+        let layer_norm = layer_norm_config
+            .init_from_pretrained_weights(model_dir.join("ln_f"), device)
+            .no_grad();
+
         let block_config = BlockConfig {
-            model_dir: model_dir.to_owned(),
             num_heads: self.n_head,
+            n_embed: self.n_embd,
+            expand_dim: self.n_embd * 4,
             depth: self.n_layer,
         };
+
+        let blocks = block_config.init_from_pretrained_weights(&model_dir, device);
 
         TextGenerationModel {
             token_embedding,
             position_embedding,
-            blocks: block_config.init(device),
-            layer_norm: layer_norm_config.init(device),
+            blocks,
+            layer_norm,
             n_vocab: self.n_vocab,
+        }
+    }
+
+    pub fn init<B: Backend>(&self, device: &B::Device) -> TextGenerationModel<B> {
+        // freeze the embeddings during training
+        let token_embedding = EmbeddingConfig::new(self.n_vocab, self.n_embd).init(device);
+        let position_embedding = EmbeddingConfig::new(self.n_ctx, self.n_embd).init(device);
+
+        let layer_norm_config = Gpt2LayerNormConfig {
+            n_embed: self.n_embd,
+        };
+
+        let block_config = BlockConfig {
+            num_heads: self.n_head,
+            n_embed: self.n_embd,
+            expand_dim: self.n_embd * 4,
+            depth: self.n_layer,
+        };
+
+        let blocks = block_config.init(device);
+        let layer_norm = layer_norm_config.init(device);
+        let n_vocab = self.n_vocab;
+
+        TextGenerationModel {
+            token_embedding,
+            position_embedding,
+            blocks,
+            layer_norm,
+            n_vocab,
         }
     }
 }
 
 #[derive(Module, Debug)]
 pub struct TextGenerationModel<B: Backend> {
-    pub token_embedding: Tensor<B, 2>,
-    pub position_embedding: Tensor<B, 2>,
+    pub token_embedding: Embedding<B>,
+    pub position_embedding: Embedding<B>,
     pub blocks: Vec<Block<B>>,
     pub layer_norm: Gpt2LayerNorm<B>,
     pub n_vocab: usize,
@@ -122,7 +167,8 @@ impl<B: Backend> TextGenerationModel<B> {
         let indices = Tensor::<B, 1, Int>::from_data(
             Data::new(indices.clone(), Shape::new([indices.len()])).convert(),
             &device,
-        );
+        )
+        .unsqueeze_dim(0);
 
         for _ in 0..num_tokens {
             let logits = self.forward(indices.clone());
@@ -145,28 +191,28 @@ impl<B: Backend> TextGenerationModel<B> {
         inputs[inputs.len() - num_tokens..].to_vec()
     }
 
-    fn forward(&self, inputs: Tensor<B, 1, Int>) -> Tensor<B, 2> {
+    fn forward(&self, inputs: Tensor<B, 2, Int>) -> Tensor<B, 2> {
         let device = B::Device::default();
 
-        let token_embeddings = self.token_embedding.clone().select(0, inputs.clone());
+        let token_embeddings = self.token_embedding.forward(inputs.clone());
 
-        let indices = (0..inputs.dims()[0]).map(|i| i as i32).collect::<Vec<_>>();
-        let indices = Tensor::<B, 1, Int>::from_data(
-            Data::new(indices.clone(), Shape::new([indices.len()])).convert(),
-            &device,
-        );
-        let position_embeddings = self.position_embedding.clone().select(0, indices);
+        let block_size = inputs.dims()[0];
+        let indices = Tensor::arange(0..block_size as i64, &device).reshape([1, block_size]);
+        let position_embeddings = self.position_embedding.forward(indices);
 
         // x size (10x768)
-        let mut x = token_embeddings + position_embeddings;
+        // remove the batch dimension, since input only contains one batch
+        let mut x = (token_embeddings + position_embeddings).squeeze(0);
 
         for block in &self.blocks {
             x = block.forward(x);
         }
 
         let x = self.layer_norm.forward(x);
+
         // reuse the embedding matrix wte for the projection
-        let x = x.matmul(self.token_embedding.clone().transpose());
+        let output_to_logits = self.token_embedding.weight.val().transpose();
+        let x = x.matmul(output_to_logits);
 
         x
     }
@@ -191,8 +237,7 @@ impl<B: Backend> TextGenerationModel<B> {
                     .forward(
                         inputs
                             .clone()
-                            .slice([batch_idx..batch_idx + 1, 0..position_idx + 1])
-                            .squeeze(1),
+                            .slice([batch_idx..batch_idx + 1, 0..position_idx + 1]),
                     )
                     .squeeze(1);
                 let output_index =
@@ -201,6 +246,9 @@ impl<B: Backend> TextGenerationModel<B> {
             }
         }
 
+        // for cross_entropy loss, the inputs are
+        // unnormalized logits and Ground truth class indices
+        // ref https://pytorch.org/docs/stable/generated/torch.nn.functional.cross_entropy.html#torch-nn-functional-cross-entropy
         let loss = CrossEntropyLossConfig::new().init(&device);
         let loss = loss.forward(output_flatten.clone(), targets_flatten.clone());
 
@@ -213,17 +261,31 @@ impl<B: Backend> TextGenerationModel<B> {
     }
 }
 
+/// Need to implement my own config
+/// instead of using LinearConfig from Burn
+/// since need to add the init from weights function
 #[derive(Config)]
 pub struct Gpt2LinearLayerConfig {
-    pub weights_dir: PathBuf,
+    pub input_dim: usize,
+    pub output_dim: usize,
 }
 
 impl Gpt2LinearLayerConfig {
     pub fn init<B: Backend>(&self, device: &B::Device) -> Gpt2LinearLayer<B> {
+        let linear_layer = LinearConfig::new(self.input_dim, self.output_dim).init(device);
+
+        Gpt2LinearLayer { linear_layer }
+    }
+
+    pub fn init_from_pretrained_weights<B: Backend>(
+        &self,
+        weights_dir: PathBuf,
+        device: &B::Device,
+    ) -> Gpt2LinearLayer<B> {
         let weights_arr: Array2<f32> =
-            ndarray_npy::read_npy(self.weights_dir.join("w.npy")).expect("should load w.npy");
+            ndarray_npy::read_npy(weights_dir.join("w.npy")).expect("should load w.npy");
         let bias_arr: Array1<f32> =
-            ndarray_npy::read_npy(self.weights_dir.join("b.npy")).expect("should load b.npy");
+            ndarray_npy::read_npy(weights_dir.join("b.npy")).expect("should load b.npy");
 
         let weights_vec = weights_arr.iter().cloned().collect::<Vec<_>>();
         let bias_vec = bias_arr.iter().cloned().collect::<Vec<_>>();
@@ -241,45 +303,90 @@ impl Gpt2LinearLayerConfig {
             device,
         );
 
-        Gpt2LinearLayer { weights, bias }
+        let weights = Param::from_tensor(weights);
+        let bias = Param::from_tensor(bias);
+
+        let mut linear_layer = LinearConfig::new(self.input_dim, self.output_dim).init(device);
+        linear_layer.weight = weights;
+        linear_layer.bias = Some(bias);
+
+        Gpt2LinearLayer { linear_layer }
     }
 }
 
 #[derive(Module, Debug)]
 pub struct Gpt2LinearLayer<B: Backend> {
-    pub weights: Tensor<B, 2>,
-    pub bias: Tensor<B, 1>,
+    pub linear_layer: Linear<B>,
 }
 
 impl<B: Backend> Gpt2LinearLayer<B> {
     pub fn forward(&self, x: Tensor<B, 2>) -> Tensor<B, 2> {
-        let bias = self.bias.clone().unsqueeze::<2>();
-        x.matmul(self.weights.clone()) + bias
+        self.linear_layer.forward(x)
     }
 }
 
 #[derive(Config)]
 pub struct FeedForwardConfig {
-    pub block_dir: PathBuf,
+    pub n_embd: usize,
+    pub expand_dim: usize,
 }
 
 impl FeedForwardConfig {
-    pub fn init<B: Backend>(&self, device: &B::Device) -> FeedForward<B> {
-        let expand_config = Gpt2LinearLayerConfig {
-            weights_dir: self.block_dir.join("mlp/c_fc"),
+    pub fn init_from_pretrained_weights<B: Backend>(
+        &self,
+        block_dir: &PathBuf,
+        device: &B::Device,
+    ) -> FeedForward<B> {
+        let contract_layer_config = Gpt2LinearLayerConfig {
+            input_dim: self.n_embd,
+            output_dim: self.expand_dim,
         };
-        let contract_config = Gpt2LinearLayerConfig {
-            weights_dir: self.block_dir.join("mlp/c_proj"),
+        let contract = contract_layer_config
+            .init_from_pretrained_weights(block_dir.join("mlp/c_proj"), device);
+
+        let expand_layer_config = Gpt2LinearLayerConfig {
+            input_dim: self.expand_dim,
+            output_dim: self.n_embd,
         };
+        let expand =
+            expand_layer_config.init_from_pretrained_weights(block_dir.join("mlp/c_fc"), device);
 
         let layer_norm_config = Gpt2LayerNormConfig {
-            layer_norm_dir: self.block_dir.join("ln_2"),
+            n_embed: self.n_embd,
         };
+        let layer_norm =
+            layer_norm_config.init_from_pretrained_weights(block_dir.join("ln_2"), device);
 
         FeedForward {
-            layer_norm: layer_norm_config.init(device),
-            expand: expand_config.init(device),
-            contract: contract_config.init(device),
+            layer_norm,
+            expand,
+            contract,
+            activation: Gelu::new(),
+        }
+    }
+
+    pub fn init<B: Backend>(&self, device: &B::Device) -> FeedForward<B> {
+        let contract_layer_config = Gpt2LinearLayerConfig {
+            input_dim: self.n_embd,
+            output_dim: self.expand_dim,
+        };
+        let contract = contract_layer_config.init(device);
+
+        let expand_layer_config = Gpt2LinearLayerConfig {
+            input_dim: self.expand_dim,
+            output_dim: self.n_embd,
+        };
+        let expand = expand_layer_config.init(device);
+
+        let layer_norm_config = Gpt2LayerNormConfig {
+            n_embed: self.n_embd,
+        };
+        let layer_norm = layer_norm_config.init(device);
+
+        FeedForward {
+            layer_norm,
+            expand,
+            contract,
             activation: Gelu::new(),
         }
     }
@@ -307,27 +414,67 @@ impl<B: Backend> FeedForward<B> {
 
 #[derive(Config)]
 pub struct AttentionConfig {
-    pub block_dir: PathBuf,
     pub num_heads: usize,
+    pub n_embd: usize,
+    pub expand_dim: usize,
 }
 
 impl AttentionConfig {
     pub fn init<B: Backend>(&self, device: &B::Device) -> Attention<B> {
-        let expand_config = Gpt2LinearLayerConfig {
-            weights_dir: self.block_dir.join("attn/c_attn"),
+        let contract_layer_config = Gpt2LinearLayerConfig {
+            input_dim: self.n_embd,
+            output_dim: self.expand_dim,
         };
-        let contract_config = Gpt2LinearLayerConfig {
-            weights_dir: self.block_dir.join("attn/c_proj"),
+        let contract = contract_layer_config.init(device);
+
+        let expand_layer_config = Gpt2LinearLayerConfig {
+            input_dim: self.expand_dim,
+            output_dim: self.n_embd,
         };
+        let expand = expand_layer_config.init(device);
 
         let layer_norm_config = Gpt2LayerNormConfig {
-            layer_norm_dir: self.block_dir.join("ln_1"),
+            n_embed: self.n_embd,
         };
+        let layer_norm = layer_norm_config.init(device);
 
         Attention {
-            layer_norm: layer_norm_config.init(device),
-            expand: expand_config.init(device),
-            contract: contract_config.init(device),
+            layer_norm,
+            expand,
+            contract,
+            num_heads: self.num_heads,
+        }
+    }
+
+    pub fn init_from_pretrained_weights<B: Backend>(
+        &self,
+        block_dir: &PathBuf,
+        device: &B::Device,
+    ) -> Attention<B> {
+        let contract_layer_config = Gpt2LinearLayerConfig {
+            input_dim: self.n_embd,
+            output_dim: self.expand_dim,
+        };
+        let contract = contract_layer_config
+            .init_from_pretrained_weights(block_dir.join("attn/c_proj"), device);
+
+        let expand_layer_config = Gpt2LinearLayerConfig {
+            input_dim: self.expand_dim,
+            output_dim: self.n_embd,
+        };
+        let expand =
+            expand_layer_config.init_from_pretrained_weights(block_dir.join("attn/c_attn"), device);
+
+        let layer_norm_config = Gpt2LayerNormConfig {
+            n_embed: self.n_embd,
+        };
+        let layer_norm =
+            layer_norm_config.init_from_pretrained_weights(block_dir.join("ln_2"), device);
+
+        Attention {
+            layer_norm,
+            expand,
+            contract,
             num_heads: self.num_heads,
         }
     }
@@ -386,21 +533,63 @@ impl<B: Backend> Attention<B> {
 
 #[derive(Config)]
 pub struct BlockConfig {
-    pub model_dir: PathBuf,
     pub num_heads: usize,
+    pub n_embed: usize,
+    pub expand_dim: usize,
     pub depth: usize,
 }
 
 impl BlockConfig {
-    pub fn init_block<B: Backend>(&self, block_dir: PathBuf, device: &B::Device) -> Block<B> {
+    pub fn init_block_from_pretrained_weights<B: Backend>(
+        &self,
+        block_dir: &PathBuf,
+        device: &B::Device,
+    ) -> Block<B> {
         let attention_config = AttentionConfig {
-            block_dir: block_dir.clone(),
+            n_embd: self.n_embed,
+            expand_dim: self.expand_dim,
+            num_heads: self.num_heads,
+        };
+        let attention = attention_config.init_from_pretrained_weights(block_dir, device);
+
+        let feedforward_config = FeedForwardConfig {
+            n_embd: self.n_embed,
+            expand_dim: self.expand_dim,
+        };
+        let feedforward = feedforward_config.init_from_pretrained_weights(block_dir, device);
+
+        Block {
+            attention,
+            feedforward,
+        }
+    }
+
+    pub fn init_from_pretrained_weights<B: Backend>(
+        &self,
+        model_dir: &PathBuf,
+        device: &B::Device,
+    ) -> Vec<Block<B>> {
+        (0..self.depth)
+            .map(|block_idx| {
+                self.init_block_from_pretrained_weights(
+                    &model_dir.join(format!("h{block_idx}")),
+                    device,
+                )
+            })
+            .collect()
+    }
+
+    pub fn init_block<B: Backend>(&self, device: &B::Device) -> Block<B> {
+        let attention_config = AttentionConfig {
+            n_embd: self.n_embed,
+            expand_dim: self.expand_dim,
             num_heads: self.num_heads,
         };
         let attention = attention_config.init(device);
 
         let feedforward_config = FeedForwardConfig {
-            block_dir: block_dir.to_path_buf(),
+            n_embd: self.n_embed,
+            expand_dim: self.expand_dim,
         };
         let feedforward = feedforward_config.init(device);
 
@@ -412,7 +601,7 @@ impl BlockConfig {
 
     pub fn init<B: Backend>(&self, device: &B::Device) -> Vec<Block<B>> {
         (0..self.depth)
-            .map(|block_idx| self.init_block(self.model_dir.join(format!("h{block_idx}")), device))
+            .map(|_block_idx| self.init_block(device))
             .collect()
     }
 }
@@ -433,16 +622,20 @@ impl<B: Backend> Block<B> {
 
 #[derive(Config)]
 pub struct Gpt2LayerNormConfig {
-    pub layer_norm_dir: PathBuf,
+    pub n_embed: usize,
 }
 
 impl Gpt2LayerNormConfig {
-    pub fn init<B: Backend>(&self, device: &B::Device) -> Gpt2LayerNorm<B> {
+    pub fn init_from_pretrained_weights<B: Backend>(
+        &self,
+        model_dir: PathBuf,
+        device: &B::Device,
+    ) -> Gpt2LayerNorm<B> {
         let beta_arr: Array1<f32> =
-            ndarray_npy::read_npy(self.layer_norm_dir.join("b.npy")).expect("should load b.npy");
+            ndarray_npy::read_npy(model_dir.join("b.npy")).expect("should load b.npy");
         let beta_vec = beta_arr.iter().cloned().collect::<Vec<_>>();
         let gamma_arr: Array1<f32> =
-            ndarray_npy::read_npy(self.layer_norm_dir.join("g.npy")).expect("should load g.npy");
+            ndarray_npy::read_npy(model_dir.join("g.npy")).expect("should load g.npy");
         let gamma_vec = gamma_arr.iter().cloned().collect::<Vec<_>>();
 
         let beta: Tensor<B, 1> = Tensor::<B, 1>::from_data(
@@ -454,6 +647,19 @@ impl Gpt2LayerNormConfig {
             device,
         );
 
+        let beta = Param::from_tensor(beta);
+        let gamma = Param::from_tensor(gamma);
+
+        Gpt2LayerNorm { beta, gamma }
+    }
+
+    pub fn init<B: Backend>(&self, device: &B::Device) -> Gpt2LayerNorm<B> {
+        let gamma: Tensor<B, 1> = Tensor::<B, 1>::zeros(Shape::new([self.n_embed]), device);
+        let beta: Tensor<B, 1> = Tensor::<B, 1>::zeros(Shape::new([self.n_embed]), device);
+
+        let beta: Param<Tensor<B, 1>> = Param::from_tensor(beta);
+        let gamma: Param<Tensor<B, 1>> = Param::from_tensor(gamma);
+
         Gpt2LayerNorm { beta, gamma }
     }
 }
@@ -461,8 +667,8 @@ impl Gpt2LayerNormConfig {
 /// this struct loads the learned parameters for layer norm
 #[derive(Module, Debug)]
 pub struct Gpt2LayerNorm<B: Backend> {
-    pub beta: Tensor<B, 1>,
-    pub gamma: Tensor<B, 1>,
+    pub beta: Param<Tensor<B, 1>>,
+    pub gamma: Param<Tensor<B, 1>>,
 }
 
 impl<B: Backend> Gpt2LayerNorm<B> {
@@ -474,9 +680,9 @@ impl<B: Backend> Gpt2LayerNorm<B> {
 
         let x = (x - mean) / (var + eps).sqrt();
 
-        let gamma = self.gamma.clone().unsqueeze::<2>();
-        let gamma = gamma.repeat(0, x.dims()[0]);
-        let beta: Tensor<B, 2> = self.beta.clone().unsqueeze::<2>();
+        let gamma = self.gamma.val().unsqueeze::<2>();
+        let gamma: Tensor<B, 2> = gamma.repeat(0, x.dims()[0]);
+        let beta: Tensor<B, 2> = self.beta.val().unsqueeze::<2>();
         let beta = beta.repeat(0, x.dims()[0]);
 
         // size (10x1) * (10x768) + (10x1)
