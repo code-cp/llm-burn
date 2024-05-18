@@ -164,11 +164,16 @@ impl<B: Backend> TextGenerationModel<B> {
 
         #[allow(clippy::cast_possible_truncation)]
         let indices: Vec<i32> = inputs.iter().map(|token_id| *token_id as i32).collect();
+
+        println!("indices {indices:?}");
+
         let indices = Tensor::<B, 1, Int>::from_data(
             Data::new(indices.clone(), Shape::new([indices.len()])).convert(),
             &device,
         )
         .unsqueeze_dim(0);
+
+        println!("indices tensor {:?}", indices.clone().into_data());
 
         for _ in 0..num_tokens {
             let logits = self.forward(indices.clone());
@@ -205,6 +210,8 @@ impl<B: Backend> TextGenerationModel<B> {
         // x size (10x768)
         // remove the batch dimension, since input only contains one batch
         let mut x = (token_embeddings + position_embeddings).squeeze(0);
+
+        println!("x {:?}", x.clone().max().into_scalar().elem::<f32>());
 
         for block in &self.blocks {
             x = block.forward(x);
@@ -471,7 +478,7 @@ impl AttentionConfig {
             n_embed: self.n_embd,
         };
         let layer_norm =
-            layer_norm_config.init_from_pretrained_weights(block_dir.join("ln_2"), device);
+            layer_norm_config.init_from_pretrained_weights(block_dir.join("ln_1"), device);
 
         Attention {
             layer_norm,
