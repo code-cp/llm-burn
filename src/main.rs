@@ -23,7 +23,7 @@ struct TrainConfig {
 fn main() {
     let args: Vec<String> = env::args().collect();
     let mode = if args.len() < 2 {
-        "train_small".to_string()
+        "infer_from_pretrained_weights".to_string()
     } else {
         String::from(&args[1])
     };
