@@ -7,14 +7,14 @@ use burn::{
         BinFileRecorder, CompactRecorder, FullPrecisionSettings, NamedMpkFileRecorder, Recorder,
     },
     tensor::backend::AutodiffBackend,
-    tensor::{activation, Bool, Device, ElementConversion, Int, Tensor},
+    tensor::{activation, backend::Backend, Bool, Device, ElementConversion, Int, Tensor},
 };
 use std::env;
 
 use crate::model::{TextGenerationModel, TextGenerationModelConfig};
 use crate::tokenizer::{BpeTokenizer, Tokenizer};
 
-pub fn infer<B: AutodiffBackend>(tokenizer: impl Tokenizer, device: &B::Device) {
+pub fn load_finetuned_model<B: Backend>(device: &B::Device) -> TextGenerationModel<B> {
     let current_dir = env::current_dir().expect("Failed to get current directory");
     let model_dir = current_dir.join("data/124M");
     let model_config = TextGenerationModelConfig::from_dir(model_dir.clone());
@@ -27,11 +27,17 @@ pub fn infer<B: AutodiffBackend>(tokenizer: impl Tokenizer, device: &B::Device) 
         .load_file(model_path, &recorder, device)
         .expect("Should be able to load the model weights from the provided file");
 
-    // let prompt = "Elementray";
-    // let num_tokens = 20;
-    let prompt = "Alan Turing theorized that computers would one day become";
-    let num_tokens = 8;
+    model
+}
 
+pub fn load_pretrained_model() {}
+
+pub fn infer<B: AutodiffBackend>(
+    tokenizer: impl Tokenizer,
+    model: TextGenerationModel<B>,
+    prompt: &str,
+    num_tokens: usize,
+) {
     let token_ids = tokenizer.encode(&prompt).unwrap();
     // Load that record with the model
     let output_ids = model.infer(token_ids, num_tokens);

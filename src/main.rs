@@ -7,9 +7,9 @@ use std::{fs, io::prelude::*, path::Path};
 use std::env;
 
 use llm_burn::data::CustomDataset;
-use llm_burn::inference::infer;
+use llm_burn::inference::{infer, load_finetuned_model};
 use llm_burn::tokenizer::BpeTokenizer;
-use llm_burn::training::{train, ExperimentConfig};
+use llm_burn::training::{load_pretrained_model, train, ExperimentConfig};
 
 type Backend = burn::backend::Autodiff<burn::backend::Wgpu>;
 // type Backend = burn::backend::Autodiff<burn::backend::LibTorch<Elem>>;
@@ -34,8 +34,18 @@ fn main() {
     let tokenizer = BpeTokenizer::from_dir(dataset_dir.clone()).unwrap();
     let device = WgpuDevice::default();
 
-    if mode == "infer" {
-        infer::<Backend>(tokenizer, &device);
+    // let prompt = "Elementray";
+    // let num_tokens = 20;
+    let prompt = "Alan Turing theorized that computers would one day become";
+    let num_tokens = 8;
+
+    if mode == "infer_from_finetuned_weights" {
+        let model = load_finetuned_model(&device);
+        infer::<Backend>(tokenizer, model, prompt, num_tokens);
+        return;
+    } else if mode == "infer_from_pretrained_weights" {
+        let model = load_pretrained_model(&device);
+        infer::<Backend>(tokenizer, model, prompt, num_tokens);
         return;
     };
 

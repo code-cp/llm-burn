@@ -9,7 +9,7 @@ use burn::{
     module::Module,
     optim::{Adam, AdamConfig},
     record::{CompactRecorder, FullPrecisionSettings, NamedMpkFileRecorder, Recorder},
-    tensor::backend::AutodiffBackend,
+    tensor::backend::{AutodiffBackend, Backend},
     train::{
         metric::{AccuracyMetric, CudaMetric, LearningRateMetric, LossMetric},
         LearnerBuilder,
@@ -21,6 +21,17 @@ use std::sync::Arc;
 use crate::data::{TextGenerationBatcher, TextGenerationItem};
 use crate::model::{TextGenerationModel, TextGenerationModelConfig};
 use crate::tokenizer::BpeTokenizer;
+
+pub fn load_pretrained_model<B: Backend>(device: &B::Device) -> TextGenerationModel<B> {
+    let current_dir = env::current_dir().expect("Failed to get current directory");
+    let model_dir = current_dir.join("data/124M");
+
+    let model_config = TextGenerationModelConfig::from_dir(model_dir.clone());
+    let model: TextGenerationModel<B> =
+        model_config.init_from_pretrained_weights(&model_dir.join("exploded_model"), device);
+
+    model
+}
 
 #[derive(Config)]
 pub struct ExperimentConfig {
@@ -43,12 +54,7 @@ pub fn train<B: AutodiffBackend, D: Dataset<TextGenerationItem> + 'static>(
     let batcher_train = TextGenerationBatcher::new(tokenizer.clone(), config.block_size);
     let batcher_test = TextGenerationBatcher::new(tokenizer.clone(), config.block_size);
 
-    let current_dir = env::current_dir().expect("Failed to get current directory");
-    let model_dir = current_dir.join("data/124M");
-
-    let model_config = TextGenerationModelConfig::from_dir(model_dir.clone());
-    let model: TextGenerationModel<B> =
-        model_config.init_from_pretrained_weights(&model_dir.join("exploded_model"), &device);
+    let model: TextGenerationModel<B> = load_pretrained_model(&device);
 
     let dataloader_train = DataLoaderBuilder::new(batcher_train)
         .batch_size(config.batch_size)
@@ -60,7 +66,7 @@ pub fn train<B: AutodiffBackend, D: Dataset<TextGenerationItem> + 'static>(
         .num_workers(4)
         .build(SamplerDataset::new(dataset_test, 1000));
 
-    let accum = 6; // Effective batch size = 6 * 6 = 32.
+    let accum = 1;
     let optim = config.optimizer.init();
     let lr_scheduler = NoamLrSchedulerConfig::new(0.01 / accum as f64)
         .with_warmup_steps(6000)
