@@ -185,6 +185,8 @@ impl<B: Backend> TextGenerationModel<B> {
             let next_token_id = selected_logits.argmax(1);
             let next_token_id = next_token_id.into_scalar().elem::<i32>();
 
+            println!("next_token_id {next_token_id:?}");
+
             inputs.push(next_token_id as u64);
         }
 
