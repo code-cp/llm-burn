@@ -121,7 +121,6 @@ impl TextGenerationModelConfig {
     }
 
     pub fn init<B: Backend>(&self, device: &B::Device) -> TextGenerationModel<B> {
-        // freeze the embeddings during training
         let token_embedding = EmbeddingConfig::new(self.n_vocab, self.n_embd).init(device);
         let position_embedding = EmbeddingConfig::new(self.n_ctx, self.n_embd).init(device);
 
