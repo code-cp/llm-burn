@@ -201,9 +201,10 @@ impl<B: Backend> TextGenerationModel<B> {
 
         let token_embeddings = self.token_embedding.forward(inputs.clone());
 
+        println!("inputs dims {:?}", inputs.clone().dims());
         println!("indices {:?}", inputs.clone().to_data());
 
-        let block_size = inputs.dims()[0];
+        let block_size = inputs.dims()[1];
         let indices = Tensor::arange(0..block_size as i64, &device).reshape([1, block_size]);
         let position_embeddings = self.position_embedding.forward(indices.clone());
 
