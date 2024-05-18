@@ -132,8 +132,8 @@ impl TextGenerationModelConfig {
         let block_config = BlockConfig {
             num_heads: self.n_head,
             n_embed: self.n_embd,
-            attn_expand_dim: 2304,
-            ffn_expand_dim: 3072,
+            attn_expand_dim: self.n_embd * 3,
+            ffn_expand_dim: self.n_embd * 4,
             depth: self.n_layer,
         };
 
@@ -214,7 +214,13 @@ impl<B: Backend> TextGenerationModel<B> {
         let x = self.layer_norm.forward(x);
 
         // reuse the embedding matrix wte for the projection
-        let output_to_logits = self.token_embedding.weight.val().clone().transpose();
+        let output_to_logits = self
+            .token_embedding
+            .weight
+            .val()
+            .clone()
+            .detach()
+            .transpose();
         let x = x.matmul(output_to_logits);
 
         x
