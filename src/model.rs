@@ -188,8 +188,6 @@ impl<B: Backend> TextGenerationModel<B> {
             let next_token_id = selected_logits.argmax(1);
             let next_token_id = next_token_id.into_scalar().elem::<i32>();
 
-            println!("next_token_id {next_token_id:?}");
-
             inputs.push(next_token_id as u64);
         }
 
@@ -201,9 +199,6 @@ impl<B: Backend> TextGenerationModel<B> {
 
         let token_embeddings = self.token_embedding.forward(inputs.clone());
 
-        println!("inputs dims {:?}", inputs.clone().dims());
-        println!("indices {:?}", inputs.clone().to_data());
-
         let block_size = inputs.dims()[1];
         let indices = Tensor::arange(0..block_size as i64, &device).reshape([1, block_size]);
         let position_embeddings = self.position_embedding.forward(indices.clone());
@@ -212,39 +207,15 @@ impl<B: Backend> TextGenerationModel<B> {
         // remove the batch dimension, since input only contains one batch
         let mut x = (token_embeddings + position_embeddings).squeeze(0);
 
-        println!(
-            "x max {:?} x min {:?}",
-            x.clone().max().into_scalar().elem::<f32>(),
-            x.clone().min().into_scalar().elem::<f32>()
-        );
-
         for block in &self.blocks {
             x = block.forward(x);
         }
 
-        println!(
-            "x max {:?} x min {:?}",
-            x.clone().max().into_scalar().elem::<f32>(),
-            x.clone().min().into_scalar().elem::<f32>()
-        );
-
         let x = self.layer_norm.forward(x);
-
-        println!(
-            "x max {:?} x min {:?}",
-            x.clone().max().into_scalar().elem::<f32>(),
-            x.clone().min().into_scalar().elem::<f32>()
-        );
 
         // reuse the embedding matrix wte for the projection
         let output_to_logits = self.token_embedding.weight.val().transpose();
         let x = x.matmul(output_to_logits);
-
-        println!(
-            "x max {:?} x min {:?}",
-            x.clone().max().into_scalar().elem::<f32>(),
-            x.clone().min().into_scalar().elem::<f32>()
-        );
 
         x
     }
@@ -529,12 +500,6 @@ impl<B: Backend> Attention<B> {
         v: &Tensor<B, 2>,
         causal_mask: &Tensor<B, 2>,
     ) -> Tensor<B, 2> {
-        println!("q {:?}", q.clone().max().into_scalar().elem::<f32>());
-        println!("k {:?}", k.clone().max().into_scalar().elem::<f32>());
-        println!("v {:?}", v.clone().max().into_scalar().elem::<f32>());
-
-        println!("causal_mask {:?}", causal_mask.dims());
-
         let d = (k.dims()[1] as f32).sqrt();
         let kt = k.clone().transpose();
         let qk = q.clone().matmul(kt) / d + causal_mask.clone();
@@ -546,28 +511,10 @@ impl<B: Backend> Attention<B> {
     pub fn forward(&self, x: Tensor<B, 2>) -> Tensor<B, 2> {
         let device = B::Device::default();
 
-        println!(
-            "x max {:?} x min {:?}",
-            x.clone().max().into_scalar().elem::<f32>(),
-            x.clone().min().into_scalar().elem::<f32>()
-        );
-
         let x = self.layer_norm.forward(x);
-
-        println!(
-            "x max {:?} x min {:?}",
-            x.clone().max().into_scalar().elem::<f32>(),
-            x.clone().min().into_scalar().elem::<f32>()
-        );
 
         // x size (10x2034)
         let x = self.expand.forward(x.clone());
-        println!("x dim {:?}", x.clone().dims());
-        println!(
-            "x max {:?} x min {:?}",
-            x.clone().max().into_scalar().elem::<f32>(),
-            x.clone().min().into_scalar().elem::<f32>()
-        );
 
         let qkv = x.clone().chunk(3, 1);
         let qkv_heads = qkv
@@ -586,12 +533,6 @@ impl<B: Backend> Attention<B> {
             .collect();
         let out_heads_concat = Tensor::cat(out_heads, 1);
         let x = self.contract.forward(out_heads_concat);
-
-        println!(
-            "x max {:?} x min {:?}",
-            x.clone().max().into_scalar().elem::<f32>(),
-            x.clone().min().into_scalar().elem::<f32>()
-        );
 
         x
     }
@@ -682,18 +623,7 @@ pub struct Block<B: Backend> {
 impl<B: Backend> Block<B> {
     pub fn forward(&self, x: Tensor<B, 2>) -> Tensor<B, 2> {
         let x = x.clone() + self.attention.forward(x);
-        println!(
-            "x max {:?} x min {:?}",
-            x.clone().max().into_scalar().elem::<f32>(),
-            x.clone().min().into_scalar().elem::<f32>()
-        );
         let x = x.clone() + self.feedforward.forward(x);
-        println!(
-            "x max {:?} x min {:?}",
-            x.clone().max().into_scalar().elem::<f32>(),
-            x.clone().min().into_scalar().elem::<f32>()
-        );
-
         x
     }
 }
@@ -755,27 +685,9 @@ impl<B: Backend> Gpt2LayerNorm<B> {
 
         let mean = x.clone().mean_dim(1);
 
-        println!(
-            "mean max {:?} mean min {:?}",
-            mean.clone().max().into_scalar().elem::<f32>(),
-            mean.clone().min().into_scalar().elem::<f32>()
-        );
-
         let var = x.clone().var(1);
 
-        println!(
-            "var max {:?} var min {:?}",
-            var.clone().max().into_scalar().elem::<f32>(),
-            var.clone().min().into_scalar().elem::<f32>()
-        );
-
         let x = (x - mean) / (var + eps).sqrt();
-
-        println!(
-            "x max {:?} x min {:?}",
-            x.clone().max().into_scalar().elem::<f32>(),
-            x.clone().min().into_scalar().elem::<f32>()
-        );
 
         let gamma = self.gamma.val().unsqueeze::<2>();
         let gamma: Tensor<B, 2> = gamma.repeat(0, x.dims()[0]);
