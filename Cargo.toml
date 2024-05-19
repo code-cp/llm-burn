@@ -6,7 +6,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-burn = { version = "0.13.0", features=["wgpu", "autodiff", "dataset", "train"] }
+burn = { version = "0.13.0", features=["wgpu", "autodiff", "dataset", "train", "tch"] }
 burn-tensor = "0.13.0"
 
 serde = {version = "1.0.171", features = ["std", "derive"]}

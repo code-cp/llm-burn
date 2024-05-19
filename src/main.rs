@@ -12,7 +12,7 @@ use llm_burn::tokenizer::BpeTokenizer;
 use llm_burn::training::{load_pretrained_model, train, ExperimentConfig};
 
 type Backend = burn::backend::Autodiff<burn::backend::Wgpu>;
-// type Backend = burn::backend::Autodiff<burn::backend::LibTorch<Elem>>;
+// type Backend = burn::backend::Autodiff<burn::backend::LibTorch<f32>>;
 
 struct TrainConfig {
     batch_size: usize,
@@ -35,6 +35,7 @@ fn main() {
 
     let tokenizer = BpeTokenizer::from_dir(dataset_dir.clone()).unwrap();
     let device = WgpuDevice::default();
+    // let device = LibTorchDevice::default();
 
     // let prompt = "Elementray";
     // let num_tokens = 20;
