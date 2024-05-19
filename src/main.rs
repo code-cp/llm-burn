@@ -53,8 +53,8 @@ fn main() {
 
     let train_config = match mode.as_str() {
         "train_small" => TrainConfig {
-            batch_size: 1,
-            block_size: 1,
+            batch_size: 2,
+            block_size: 3,
             max_iters: 1,
         },
         "train_full" => TrainConfig {
@@ -83,8 +83,8 @@ fn main() {
 
     train::<Backend, CustomDataset>(
         device,
-        CustomDataset::train(data_dir, config.batch_size),
-        CustomDataset::test(data_dir, config.batch_size),
+        CustomDataset::train(data_dir, config.block_size),
+        CustomDataset::test(data_dir, config.block_size),
         config,
         tokenizer,
         artifact_dir,

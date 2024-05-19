@@ -53,9 +53,9 @@ impl CustomDataset {
         }
     }
 
-    pub fn new(data_file: &str, split: &str, batch_size: usize) -> Self {
+    pub fn new(data_file: &str, split: &str, block_size: usize) -> Self {
         let contents = fs::read_to_string(data_file).unwrap();
-        Self::new_with_contents(&contents, split, batch_size)
+        Self::new_with_contents(&contents, split, block_size)
     }
 
     pub fn train(data_file: &str, block_size: usize) -> Self {
