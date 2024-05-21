@@ -1,3 +1,3 @@
 # llm-burn
 
-Implements https://github.com/karpathy/llm.c in Rust with Burn 
+Implements GPT2 in Rust with Burn 
